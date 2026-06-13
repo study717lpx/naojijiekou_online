@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>手机太阳系模拟 · 优化版</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#050817;color:#fff;font-family:Arial,"Microsoft YaHei",sans-serif}
+canvas{display:block;width:100vw;height:100vh;touch-action:none;background:radial-gradient(circle at 50% 45%,#1b2440 0%,#080c18 55%,#02030a 100%)}
+#ui{position:fixed;left:10px;top:10px;z-index:10;background:rgba(0,0,0,.45);padding:10px;border-radius:14px;font-size:14px;line-height:1.65;backdrop-filter:blur(6px)}
+button,select,input{font-size:14px;margin:2px;border-radius:6px;border:0;padding:5px 8px}
+button{background:#e9eefc}
+#speed{width:145px;vertical-align:middle}
+.small{font-size:12px;opacity:.86}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+<b>Solar System 手机版 · 优化版</b><br>
+<button id="pause">暂停</button>
+<button id="wire">线框：关</button>
+<button data-mode="inner">内太阳系</button>
+<button data-mode="outer">外太阳系</button>
+<button data-mode="all">全景</button><br>
+视角 <select id="view"><option value="free">自由</option><option value="earth">跟随地球</option><option value="saturn">跟随土星</option></select><br>
+速度 <input id="speed" type="range" min="0" max="5" step="0.1" value="1"><span id="sv">1.0x</span><br>
+<span class="small">单指拖动 · 双指缩放 · 双击切换全景/近景</span>
+</div>
+<script>
+const c=document.getElementById('c'),ctx=c.getContext('2d');
+let W,H,DPR;
+function resize(){DPR=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;c.width=W*DPR;c.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0)}
+resize();addEventListener('resize',resize);
+
+const planets=[
+ {n:'水星',r:58,s:3.2,c:'#b6aea4',o:.035,rot:.05},
+ {n:'金星',r:92,s:5.0,c:'#e0bd73',o:.026,rot:.03},
+ {n:'地球',r:132,s:5.3,c:'#3a83ff',o:.020,rot:.06,moon:true},
+ {n:'火星',r:178,s:4.3,c:'#d06b47',o:.016,rot:.055},
+ {n:'木星',r:255,s:12.5,c:'#d8b08a',o:.009,rot:.03},
+ {n:'土星',r:335,s:10.5,c:'#dac889',o:.007,rot:.025,ring:true},
+ {n:'天王星',r:415,s:7.7,c:'#8ee6ef',o:.005,rot:.02},
+ {n:'海王星',r:495,s:7.6,c:'#486eff',o:.004,rot:.018}
+];
+let t=0,paused=false,speed=1,wire=false,view='free';
+let zoom=1.55,panX=0,panY=90,targetZoom=1.55,targetPanX=0,targetPanY=90;
+let dragging=false,lastX=0,lastY=0,lastDist=0,lastTap=0;
+function setMode(m){
+ if(m==='inner'){targetZoom=2.6;targetPanX=0;targetPanY=125}
+ if(m==='outer'){targetZoom=.92;targetPanX=0;targetPanY=80}
+ if(m==='all'){targetZoom=.62;targetPanX=0;targetPanY=35}
+}
+document.querySelectorAll('button[data-mode]').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+speed.oninput=e=>{speed=+e.target.value;sv.textContent=speed.toFixed(1)+'x'};
+pause.onclick=()=>{paused=!paused;pause.textContent=paused?'播放':'暂停'};
+wire.onclick=()=>{wire=!wire;wire.textContent='线框：'+(wire?'开':'关')};
+document.getElementById('view').onchange=e=>view=e.target.value;
+
+function pos(p){return {x:Math.cos(t*p.o)*p.r,y:Math.sin(t*p.o)*p.r*.46}}
+function stars(){
+ ctx.save();
+ for(let i=0;i<180;i++){
+  const x=(i*137.7+23)%W,y=(i*277.3+91)%H,a=.25+((i*19)%70)/100,r=((i*11)%3+1)/1.8;
+  ctx.globalAlpha=a;ctx.fillStyle='#e8eeff';ctx.fillRect(x,y,r,r);
+ }
+ ctx.restore();
+}
+function label(txt,x,y,idx){
+ ctx.font='12px Arial';ctx.textBaseline='middle';
+ const offset=(idx%4)*15-20;
+ const lx=x+12,ly=y+offset;
+ ctx.strokeStyle='rgba(0,0,0,.8)';ctx.lineWidth=4;ctx.strokeText(txt,lx,ly);
+ ctx.fillStyle='rgba(255,255,255,.95)';ctx.fillText(txt,lx,ly);
+}
+function drawPlanet(p,x,y,idx){
+ ctx.save();ctx.translate(x,y);
+ if(p.ring){
+  ctx.strokeStyle='#f0daa0';ctx.lineWidth=Math.max(2,3/zoom);
+  ctx.beginPath();ctx.ellipse(0,0,p.s*2.55,p.s*.78,0,0,Math.PI*2);ctx.stroke();
+  ctx.strokeStyle='rgba(255,255,255,.45)';ctx.beginPath();ctx.ellipse(0,0,p.s*1.95,p.s*.56,0,0,Math.PI*2);ctx.stroke();
+ }
+ const g=ctx.createRadialGradient(-p.s*.4,-p.s*.5,1,0,0,p.s*1.3);
+ g.addColorStop(0,'#fff');g.addColorStop(.18,p.c);g.addColorStop(1,'#11182a');
+ ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,p.s,0,Math.PI*2);ctx.fill();
+ if(wire){ctx.strokeStyle='#fff';ctx.lineWidth=1/zoom;ctx.stroke()}
+ if(p.n==='木星'){ctx.strokeStyle='rgba(90,45,20,.5)';ctx.lineWidth=1.5/zoom;for(let k=-2;k<=2;k++){ctx.beginPath();ctx.ellipse(0,k*p.s*.22,p.s*.95,p.s*.08,0,0,Math.PI*2);ctx.stroke()}}
+ if(p.moon){
+   const mx=Math.cos(t*.085)*18,my=Math.sin(t*.085)*8;
+   ctx.fillStyle='#d8d8d8';ctx.beginPath();ctx.arc(mx,my,2.0,0,Math.PI*2);ctx.fill();
+   label('月球',mx,my,idx+1);
+ }
+ ctx.restore();
+ label(p.n,x,y,idx);
+}
+function draw(){
+ requestAnimationFrame(draw);
+ if(!paused)t+=speed;
+ zoom+= (targetZoom-zoom)*.08; panX+=(targetPanX-panX)*.08; panY+=(targetPanY-panY)*.08;
+ ctx.clearRect(0,0,W,H);stars();
+ let focus={x:0,y:0};
+ if(view==='earth')focus=pos(planets[2]);
+ if(view==='saturn')focus=pos(planets[5]);
+ const cx=W/2+panX-focus.x*zoom,cy=H/2+panY-focus.y*zoom;
+ ctx.save();ctx.translate(cx,cy);ctx.scale(zoom,zoom);
+ ctx.strokeStyle='rgba(190,210,255,.18)';ctx.lineWidth=1/zoom;
+ for(const p of planets){ctx.beginPath();ctx.ellipse(0,0,p.r,p.r*.46,0,0,Math.PI*2);ctx.stroke()}
+ const sg=ctx.createRadialGradient(0,0,2,0,0,40);sg.addColorStop(0,'#fff7ba');sg.addColorStop(.25,'#ffd13a');sg.addColorStop(.7,'rgba(255,169,20,.35)');sg.addColorStop(1,'rgba(255,130,0,0)');
+ ctx.fillStyle=sg;ctx.beginPath();ctx.arc(0,0,40,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#ffd447';ctx.beginPath();ctx.arc(0,0,15,0,Math.PI*2);ctx.fill();
+ label('太阳',18,-8,0);
+ planets.forEach((p,i)=>{const q=pos(p);drawPlanet(p,q.x,q.y,i)});
+ ctx.restore();
+}
+draw();
+
+c.addEventListener('pointerdown',e=>{
+ dragging=true;lastX=e.clientX;lastY=e.clientY;c.setPointerCapture(e.pointerId);
+ const now=Date.now(); if(now-lastTap<300){ if(targetZoom<1) setMode('inner'); else setMode('all'); } lastTap=now;
+});
+c.addEventListener('pointermove',e=>{if(!dragging)return;targetPanX+=e.clientX-lastX;targetPanY+=e.clientY-lastY;lastX=e.clientX;lastY=e.clientY});
+c.addEventListener('pointerup',()=>dragging=false);
+c.addEventListener('wheel',e=>{targetZoom*=e.deltaY>0?.88:1.12;targetZoom=Math.max(.42,Math.min(4,targetZoom))},{passive:true});
+c.addEventListener('touchstart',e=>{if(e.touches.length===2){lastDist=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY)}},{passive:false});
+c.addEventListener('touchmove',e=>{
+ if(e.touches.length===2){
+  e.preventDefault();
+  const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,e.touches[0].clientY-e.touches[1].clientY);
+  if(lastDist>0){targetZoom*=d/lastDist;targetZoom=Math.max(.42,Math.min(4,targetZoom))}
+  lastDist=d;
+ }
+},{passive:false});
+setMode('inner');
+</script>
+</body>
+</html>
